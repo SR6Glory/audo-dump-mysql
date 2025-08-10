@@ -2,7 +2,7 @@
 setlocal EnableExtensions EnableDelayedExpansion
 
 :: ── Config
-set "REPO_URL=https://github.com/SR6Glory/audo-dump-mysql.git"
+set "REPO_URL=https://github.com/SR6Glory/auto-dump-mysql.git"
 set "TARGET_DIR=%USERPROFILE%\audo-dump-mysql"
 set "BUN_BIN=%USERPROFILE%\.bun\bin"
 
