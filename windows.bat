@@ -3,10 +3,10 @@ setlocal EnableExtensions EnableDelayedExpansion
 
 :: ── Config
 set "REPO_URL=https://github.com/SR6Glory/auto-dump-mysql.git"
-set "TARGET_DIR=%USERPROFILE%\audo-dump-mysql"
+set "TARGET_DIR=%USERPROFILE%\auto-dump-mysql"
 set "BUN_BIN=%USERPROFILE%\.bun\bin"
 
-title "Auto setup ^& run • audo-dump-mysql"
+title "Auto setup ^& run • auto-dump-mysql"
 color 0A
 echo ========================================================
 echo [0] Start
