@@ -6,7 +6,7 @@ set "REPO_URL=https://github.com/SR6Glory/auto-dump-mysql.git"
 set "TARGET_DIR=%USERPROFILE%\auto-dump-mysql"
 set "BUN_BIN=%USERPROFILE%\.bun\bin"
 
-title "Auto setup ^& run • auto-dump-mysql"
+title "Auto setup and run auto-dump-mysql"
 color 0A
 echo ========================================================
 echo [0] Start
@@ -30,7 +30,7 @@ if %errorlevel% neq 0 (
   echo [1] OK: Running as Administrator.
 )
 
-:: ── Pick package manager ────────────────────────────────────────────────
+:: ── Pick package manager: winget if available, else choco (auto-install)
 where winget >nul 2>&1 && (set "PKG=winget") || (set "PKG=")
 if not defined PKG (
   where choco >nul 2>&1 || (
@@ -107,17 +107,19 @@ pushd "%TARGET_DIR%" >nul
 bun install
 if errorlevel 1 (popd >nul & echo [X] bun install failed.& pause & exit /b 1)
 
-:: ── Prompt for .env values ──────────────────────────────────────────────
+:: ── Prompt for .env values (required + optional) ────────────────────────
 set "ENV_FILE=%TARGET_DIR%\.env"
 if not exist "%ENV_FILE%" (
   echo [8.5] Creating .env
   type nul > "%ENV_FILE%"
 )
 
-call :EnsureEnvValue "%ENV_FILE%" "MYSQL_SOURCE"       "Enter MYSQL_SOURCE DSN"       "Example: user:pass@tcp(host:3306)/db?params" ""
-call :EnsureEnvValue "%ENV_FILE%" "MYSQL_DESTINATION"  "Enter MYSQL_DESTINATION DSN"  "Example: user:pass@tcp(host:3306)/db?params" ""
+:: Required
+call :EnsureEnvValue "%ENV_FILE%" "MYSQL_SOURCE"      "Enter MYSQL_SOURCE DSN"      "Example: user:pass@tcp(host:3306)/db?params" ""
+call :EnsureEnvValue "%ENV_FILE%" "MYSQL_DESTINATION" "Enter MYSQL_DESTINATION DSN" "Example: user:pass@tcp(host:3306)/db?params" ""
 
-
+:: Optional (blank allowed)
+call :EnsureEnvValueOptional "%ENV_FILE%" "EXCLUDE_TABLE" "Enter EXCLUDE_TABLE (comma-separated) — leave blank if none" "Example: logs,temp_data"
 
 :: ── Run app ─────────────────────────────────────────────────────────────
 echo [9] Run app
@@ -141,41 +143,52 @@ exit /b 0
 :: Helpers
 :: =========================================================
 :EnsureEnvValue
-:: %1=file  %2=KEY  %3=promptLine  %4=exampleLine  %5=defaultValue
+:: %1=file  %2=KEY  %3=prompt  %4=example  %5=default
 setlocal EnableExtensions EnableDelayedExpansion
-set "FILE=%~1"
-set "KEY=%~2"
-set "PROMPTLINE=%~3"
-set "EXAMPLELINE=%~4"
-set "DEF=%~5"
+set "FILE=%~1" & set "KEY=%~2" & set "PROMPT=%~3" & set "EXAMPLE=%~4" & set "DEF=%~5"
 set "CURR="
-
-:: read current value (if present)
-for /f "usebackq tokens=1,* delims==" %%A in (`findstr /b /c:"!KEY!=" "!FILE!" 2^>nul`) do (
-  set "CURR=%%B"
-)
-
-if defined CURR (
-  endlocal & exit /b 0
-)
-
+for /f "usebackq tokens=1,* delims==" %%A in (`findstr /b /c:"!KEY!=" "!FILE!" 2^>nul`) do set "CURR=%%B"
+if defined CURR ( endlocal & exit /b 0 )
 echo.
-echo    !PROMPTLINE!
-if defined EXAMPLELINE echo    !EXAMPLELINE!
+echo    !PROMPT!
+if defined EXAMPLE echo    !EXAMPLE!
 if defined DEF echo    [default: !DEF!]
+:ASK_REQ_%RANDOM%
 set /p INPUT="    > "
-
 if not defined INPUT if defined DEF set "INPUT=!DEF!"
-
+if not defined INPUT (
+  echo    (Required; please enter a value)
+  goto :ASK_REQ_%RANDOM%
+)
 set "TMP=%FILE%.tmp"
 break > "%TMP%"
 for /f "usebackq delims=" %%L in ("%FILE%") do (
   echo(%%L| findstr /b /c:"%KEY%=" >nul || (>>"%TMP%" echo(%%L)
 )
-
 >>"%TMP%" <nul set /p "=%KEY%="
 >>"%TMP%" <nul set /p "=%INPUT%"
 >>"%TMP%" echo.
+move /y "%TMP%" "%FILE%" >nul
+endlocal & exit /b 0
 
+:EnsureEnvValueOptional
+:: %1=file  %2=KEY  %3=prompt  %4=example
+setlocal EnableExtensions EnableDelayedExpansion
+set "FILE=%~1" & set "KEY=%~2" & set "PROMPT=%~3" & set "EXAMPLE=%~4"
+set "CURR="
+for /f "usebackq tokens=1,* delims==" %%A in (`findstr /b /c:"!KEY!=" "!FILE!" 2^>nul`) do set "CURR=%%B"
+if defined CURR ( endlocal & exit /b 0 )
+echo.
+echo    !PROMPT!
+if defined EXAMPLE echo    !EXAMPLE!
+set /p INPUT="    (Leave blank if none) > "
+set "TMP=%FILE%.tmp"
+break > "%TMP%"
+for /f "usebackq delims=" %%L in ("%FILE%") do (
+  echo(%%L| findstr /b /c:"%KEY%=" >nul || (>>"%TMP%" echo(%%L)
+)
+>>"%TMP%" <nul set /p "=%KEY%="
+>>"%TMP%" <nul set /p "=%INPUT%"
+>>"%TMP%" echo.
 move /y "%TMP%" "%FILE%" >nul
 endlocal & exit /b 0

@@ -111,7 +111,19 @@ async function run() {
   if (!knexSource) throw new Error("Source connection not found.");
   if (!knexDest) throw new Error("Destination connection not found.");
 
-  const tables = await getTables(knexSource);
+  // Parse exclude list from env
+  const excludeTables = (process.env.EXCLUDE_TABLE || "")
+    .replace(/[\[\]]/g, "") // remove square brackets if present
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+
+  let tables = await getTables(knexSource);
+  if (excludeTables.length > 0) {
+    tables = tables.filter((t) => !excludeTables.includes(t));
+    console.log(`Excluding tables: ${excludeTables.join(", ")}`);
+  }
+
   const BATCH_SIZE = 5000;
 
   for (const tableName of tables) {
@@ -131,7 +143,6 @@ async function run() {
       })`
     );
 
-    // Create progress bar
     const bar = new cliProgress.SingleBar(
       {
         format: `[${tableName}] [{bar}] {percentage}% | {value}/{total} rows`,
