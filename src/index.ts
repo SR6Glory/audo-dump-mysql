@@ -103,6 +103,107 @@ async function upsertBatch(
   }
 }
 
+type ColumnDef = { name: string; ddl: string };
+
+function parseCreateTableColumns(createStmt: string): ColumnDef[] {
+  const firstParen = createStmt.indexOf("(");
+  if (firstParen === -1) return [];
+
+  let depth = 0;
+  let end = -1;
+  for (let i = firstParen; i < createStmt.length; i++) {
+    const ch = createStmt[i];
+    if (ch === "(") depth++;
+    else if (ch === ")") {
+      depth--;
+      if (depth === 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+  if (end === -1) return [];
+
+  const body = createStmt.slice(firstParen + 1, end);
+
+  const parts: string[] = [];
+  let buf = "";
+  let inBacktick = false;
+  let inSingle = false;
+  let inDouble = false;
+
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (ch === "`" && !inSingle && !inDouble) {
+      inBacktick = !inBacktick;
+      buf += ch;
+      continue;
+    }
+    if (ch === "'" && !inBacktick && !inDouble) {
+      inSingle = !inSingle;
+      buf += ch;
+      continue;
+    }
+    if (ch === '"' && !inBacktick && !inSingle) {
+      inDouble = !inDouble;
+      buf += ch;
+      continue;
+    }
+    if (ch === "," && !inBacktick && !inSingle && !inDouble) {
+      parts.push(buf.trim());
+      buf = "";
+      continue;
+    }
+    buf += ch;
+  }
+  if (buf.trim()) parts.push(buf.trim());
+
+  const cols: ColumnDef[] = [];
+  for (const p of parts) {
+    const trimmed = p.trim();
+    if (!trimmed.startsWith("`")) continue;
+
+    const match = trimmed.match(/^`([^`]+)`\s+([\s\S]*)$/);
+    if (!match) continue;
+
+    const name = match[1];
+    const ddl = trimmed;
+    cols.push({ name, ddl });
+  }
+  return cols;
+}
+
+async function ensureColumnsOnDest(
+  knexDest: Knex,
+  table: string,
+  srcCreateStmt: string
+) {
+  const destCols = await getColumns(knexDest, table);
+  const srcCols = parseCreateTableColumns(srcCreateStmt);
+
+  const existing = new Set(destCols);
+
+  for (let i = 0; i < srcCols.length; i++) {
+    const { name, ddl } = srcCols[i];
+    if (existing.has(name)) continue;
+
+    let positionClause = " FIRST";
+    for (let j = i - 1; j >= 0; j--) {
+      const prevName = srcCols[j].name;
+      if (existing.has(prevName)) {
+        positionClause = ` AFTER \`${prevName}\``;
+        break;
+      }
+    }
+
+    const sql = `ALTER TABLE \`${table}\` ADD COLUMN ${ddl}${positionClause};`;
+    console.log(`[${table}] Adding missing column: ${name}`);
+    await knexDest.raw(sql);
+
+    existing.add(name);
+  }
+}
+
 async function run() {
   const knexPools = createKnexConnectionsFromSetting();
   const knexSource = knexPools.source;
@@ -111,9 +212,8 @@ async function run() {
   if (!knexSource) throw new Error("Source connection not found.");
   if (!knexDest) throw new Error("Destination connection not found.");
 
-  // Parse exclude list from env
   const excludeTables = (process.env.EXCLUDE_TABLE || "")
-    .replace(/[\[\]]/g, "") // remove square brackets if present
+    .replace(/[\[\]]/g, "")
     .split(",")
     .map((t) => t.trim())
     .filter(Boolean);
@@ -128,7 +228,12 @@ async function run() {
 
   for (const tableName of tables) {
     const createStmt = await getCreateTable(knexSource, tableName);
+
+    // ensure table exists
     await ensureTableOnDest(knexDest, createStmt);
+
+    // ensure new columns are added
+    await ensureColumnsOnDest(knexDest, tableName, createStmt);
 
     const pkCols = await getPrimaryKeyColumns(knexSource, tableName);
     const uniqueCols = pkCols.length
