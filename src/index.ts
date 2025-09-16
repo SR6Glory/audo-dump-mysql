@@ -131,6 +131,7 @@ function parseCreateTableColumns(createStmt: string): ColumnDef[] {
   let inBacktick = false;
   let inSingle = false;
   let inDouble = false;
+  let parenDepth = 0;
 
   for (let i = 0; i < body.length; i++) {
     const ch = body[i];
@@ -149,7 +150,23 @@ function parseCreateTableColumns(createStmt: string): ColumnDef[] {
       buf += ch;
       continue;
     }
-    if (ch === "," && !inBacktick && !inSingle && !inDouble) {
+    if (ch === "(" && !inBacktick && !inSingle && !inDouble) {
+      parenDepth++;
+      buf += ch;
+      continue;
+    }
+    if (ch === ")" && !inBacktick && !inSingle && !inDouble) {
+      parenDepth--;
+      buf += ch;
+      continue;
+    }
+    if (
+      ch === "," &&
+      !inBacktick &&
+      !inSingle &&
+      !inDouble &&
+      parenDepth === 0
+    ) {
       parts.push(buf.trim());
       buf = "";
       continue;
