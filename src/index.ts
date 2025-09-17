@@ -95,10 +95,65 @@ async function upsertBatch(
   const chunks = chunkArray(rows, INSERT_CHUNK);
 
   for (const chunk of chunks) {
-    if (conflictCols.length > 0) {
-      await knexDest(table).insert(chunk).onConflict(conflictCols).merge();
-    } else {
-      await knexDest(table).insert(chunk);
+    try {
+      if (conflictCols.length > 0) {
+        await knexDest(table).insert(chunk).onConflict(conflictCols).merge();
+      } else {
+        await knexDest(table).insert(chunk);
+      }
+    } catch (error: any) {
+      if (error.code === "ER_DATA_TOO_LONG") {
+        console.error(
+          `\n[${table}] Data too long error. Analyzing problematic data...`
+        );
+
+        // Try to identify which column and row is causing the issue
+        for (let i = 0; i < chunk.length; i++) {
+          const row = chunk[i];
+          try {
+            if (conflictCols.length > 0) {
+              await knexDest(table)
+                .insert([row])
+                .onConflict(conflictCols)
+                .merge();
+            } else {
+              await knexDest(table).insert([row]);
+            }
+          } catch (rowError: any) {
+            if (rowError.code === "ER_DATA_TOO_LONG") {
+              console.error(`[${table}] Problematic row found at index ${i}:`);
+
+              // Check each column for length issues
+              for (const [key, value] of Object.entries(row)) {
+                if (typeof value === "string" && value.length > 255) {
+                  console.error(
+                    `  Column '${key}': length=${
+                      value.length
+                    }, value preview: ${value.substring(0, 100)}...`
+                  );
+                }
+              }
+
+              // Get column info to compare
+              const columnInfo = await getColumnInfo(knexDest, table);
+              console.error(`[${table}] Current column definitions:`);
+              for (const [key, value] of Object.entries(row)) {
+                if (columnInfo[key]) {
+                  console.error(`  ${key}: ${columnInfo[key].type}`);
+                }
+              }
+
+              throw new Error(
+                `Data too long for table '${table}' at row index ${i}. Check column sizes.`
+              );
+            } else {
+              throw rowError;
+            }
+          }
+        }
+      } else {
+        throw error;
+      }
     }
   }
 }
@@ -190,6 +245,24 @@ function parseCreateTableColumns(createStmt: string): ColumnDef[] {
   return cols;
 }
 
+async function getColumnInfo(
+  knex: Knex,
+  table: string
+): Promise<Record<string, any>> {
+  const [rows] = await knex.raw(`DESCRIBE \`${table}\`;`);
+  const info: Record<string, any> = {};
+  for (const row of rows) {
+    info[row.Field] = {
+      type: row.Type,
+      null: row.Null,
+      key: row.Key,
+      default: row.Default,
+      extra: row.Extra,
+    };
+  }
+  return info;
+}
+
 async function ensureColumnsOnDest(
   knexDest: Knex,
   table: string,
@@ -199,6 +272,32 @@ async function ensureColumnsOnDest(
   const srcCols = parseCreateTableColumns(srcCreateStmt);
 
   const existing = new Set(destCols);
+
+  // Check for column type mismatches
+  if (destCols.length > 0) {
+    const destColumnInfo = await getColumnInfo(knexDest, table);
+    for (const { name, ddl } of srcCols) {
+      if (existing.has(name)) {
+        // Extract type from source DDL
+        const typeMatch = ddl.match(/`[^`]+`\s+([^\s,]+(?:\([^)]+\))?)/);
+        if (typeMatch && destColumnInfo[name]) {
+          const srcType = typeMatch[1].toLowerCase();
+          const destType = destColumnInfo[name].type.toLowerCase();
+
+          if (srcType !== destType) {
+            console.log(
+              `[${table}] Column type mismatch for '${name}': src=${srcType}, dest=${destType}`
+            );
+            console.log(
+              `[${table}] Modifying column '${name}' to match source...`
+            );
+            const modifySql = `ALTER TABLE \`${table}\` MODIFY COLUMN ${ddl};`;
+            await knexDest.raw(modifySql);
+          }
+        }
+      }
+    }
+  }
 
   for (let i = 0; i < srcCols.length; i++) {
     const { name, ddl } = srcCols[i];
